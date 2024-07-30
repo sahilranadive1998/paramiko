@@ -21,9 +21,7 @@ Server-mode SFTP support.
 """
 
 import os
-import time
 import errno
-import libnfs
 import sys
 from hashlib import md5, sha1
 
@@ -127,24 +125,6 @@ class SFTPServer(BaseSFTP, SubsystemHandler):
         self.file_table = {}
         self.folder_table = {}
         self.server = sftp_si(server, *args, **kwargs)
-        self.nfs_path = None
-        self.previous_list_response = None
-        # self.nfs_path_to_open = None
-        self.nfs = libnfs.NFS('nfs://10.45.129.164/default-container-14151218230332/')
-        self.nfs_open_handle = None
-        self.write_size_dict = {}
-        # self.fname = "caching_coalesced_append"
-        self.cache_debug_file_name = "/home/nutanix/sahil/debug_logs/cache_size.out"
-        self.cache_write_time_file_name = "/home/nutanix/sahil/debug_logs/write_time.out"
-        self.cache_read_time_file_name = "/home/nutanix/sahil/debug_logs/read_time.out"
-        self.cache_debug_file_handle = open( self.cache_debug_file_name, "a+")
-        self.cache_write_time_file_handle = open( self.cache_write_time_file_name, "a+")
-        self.cache_read_time_file_handle = open( self.cache_read_time_file_name, "a+")
-        self.cache = {}
-        self.cache_offsets = {}
-        # self.cache_test_file = open("/home/nutanix/sahil/qemu-traces/qemu_cache_writes.out","a+")
-        # Creating file for testbench
-        # self.test_file = open("/home/nutanix/sahil/qemu-traces/sftp_full_trace.out","a+")
 
     def _log(self, level, msg):
         if issubclass(type(msg), list):
@@ -241,16 +221,6 @@ class SFTPServer(BaseSFTP, SubsystemHandler):
 
     # ...internals...
 
-    def _set_sftp_attributes(self, nfs_stat_response):
-        dummy_return = SFTPAttributes()
-        dummy_return.st_size = nfs_stat_response['size']
-        dummy_return.st_uid = nfs_stat_response['uid']
-        dummy_return.st_gid = nfs_stat_response['gid']
-        dummy_return.st_mode = nfs_stat_response['mode']
-        dummy_return.st_atime = nfs_stat_response['atime']['sec'] + nfs_stat_response['atime']['nsec']/1000000000
-        dummy_return.st_mtime = nfs_stat_response['mtime']['sec'] + nfs_stat_response['mtime']['nsec']/1000000000
-        return dummy_return
-
     def _response(self, request_number, t, *args):
         msg = Message()
         msg.add_int(request_number)
@@ -293,7 +263,6 @@ class SFTPServer(BaseSFTP, SubsystemHandler):
         # (but don't mind it being blank)
         self._response(request_number, CMD_STATUS, code, desc, "")
 
-    # Need to handle this case later!
     def _open_folder(self, request_number, path):
         resp = self.server.list_folder(path)
         if issubclass(type(resp), list):
@@ -308,165 +277,16 @@ class SFTPServer(BaseSFTP, SubsystemHandler):
     def _read_folder(self, request_number, folder):
         flist = folder._get_next_files()
         if len(flist) == 0:
-            self._log(DEBUG, "length of flist is now 0")
             self._send_status(request_number, SFTP_EOF)
             return
         msg = Message()
         msg.add_int(request_number)
         msg.add_int(len(flist))
-        # nfs_list_response = self.nfs.listdir('.')
-        # self._log(DEBUG, "Read folder response from NFS is {!r}".format(nfs_list_response))
-        self._log(DEBUG, "Read folder response from SFTP is {!r}".format(flist))
         for attr in flist:
-            self._log(DEBUG, "file name is {!r}".format(attr.filename))
             msg.add_string(attr.filename)
             msg.add_string(attr)
             attr._pack(msg)
         self._send_packet(CMD_NAME, msg)
-
-    def _read_nfs_folder(self, request_number):
-        nfs_list_response = self.nfs.listdir(self.nfs_path)
-        if self.previous_list_response == nfs_list_response:
-            self.previous_list_response = None
-            self._log(DEBUG, "Response same as previous. Terminate!")
-            self._send_status(request_number, SFTP_EOF)
-            return
-            
-        self.previous_list_response = nfs_list_response
-
-        self._log(DEBUG, "List folder response from NFS is {!r}".format(nfs_list_response))
-        self._log(DEBUG, "List folder response length from NFS is {!r}".format(len(nfs_list_response)))
-        msg = Message()
-        msg.add_int(request_number)
-        msg.add_int(len(nfs_list_response))
-        for filename in nfs_list_response:
-            self._log(DEBUG, "file name is {!r}".format(filename))
-            msg.add_string(filename)
-            nfs_stat_response = self.nfs.stat(self.nfs_path+'/'+filename)
-            attr = self._set_sftp_attributes(nfs_stat_response)
-            msg.add_string(attr)
-            attr._pack(msg)
-        self._send_packet(CMD_NAME, msg)
-
-    def _delete_cache_entries(self, cache_entries_to_delete):
-        for start_offset in cache_entries_to_delete:
-            del self.cache[start_offset]
-            del self.cache_offsets[start_offset]
-
-    def _flush_to_nfs(self, write_offset, data=None):
-
-        self.nfs_open_handle.seek(write_offset, os.SEEK_SET)
-
-        write_length = 0
-        if data is None:
-            # Flushing cache at the end of all ops
-            self.nfs_open_handle.write(self.cache[write_offset])
-            write_length = len(self.cache[write_offset])
-            # self._log(DEBUG, "Eviction offset is {!r}".format(write_offset))
-            # self._log(DEBUG, "Cache eviction length is {!r}".format(write_length))
-            del self.cache[write_offset]
-            del self.cache_offsets[write_offset]
-        else:
-            # Dont need to clean cache up anymore
-            # self._clean_cache_up(write_offset, len(data))
-            # self._log(DEBUG, "Write offset is {!r}".format(write_offset))
-            self.nfs_open_handle.write(data)
-            write_length = len(data)
-        
-        # self._log(DEBUG, "Length of Data to be written is {!r}".format(write_length))
-        if write_length in self.write_size_dict:
-            self.write_size_dict[write_length] += 1
-        else:
-            self.write_size_dict[write_length] = 1
-
-    
-    def _write_to_cache(self, write_offset, data):
-        # NOTE: Do not really need cache_offsets. Can be computed 
-        # through data and start_offsets.
-        # Check if offset can be added to existing cache
-
-        # Coalescing writes here
-        overlapping_offsets = 0
-        is_cached = False
-        cache_offsets_to_clean = []
-        for start_offset in self.cache.keys():
-            end_offset = self.cache_offsets[start_offset]
-            end_write_offset = write_offset + len(data)
-            if write_offset >= start_offset and end_write_offset <= end_offset:
-                # New write is contained within a cache entry
-                old_entry = self.cache[start_offset]
-                updated_entry = old_entry[:(write_offset-start_offset)] + data + old_entry[(end_write_offset-start_offset):]
-                self.cache[start_offset] = updated_entry
-                overlapping_offsets += 1
-                is_cached = True
-                # We are done with all modifications here
-                return overlapping_offsets, is_cached
-            elif start_offset >= write_offset and end_offset <= end_write_offset:
-                # Get rid of all cache entries contained in the write
-                cache_offsets_to_clean.append(start_offset)
-                overlapping_offsets += 1
-            elif start_offset < write_offset and end_offset >= write_offset and end_offset <= end_write_offset:
-                # Modify write data to include old cached values
-                # Modify starting point of write 
-                data = self.cache[start_offset][:(write_offset-start_offset)] + data
-                write_offset = start_offset
-                # Clean up old entry
-                cache_offsets_to_clean.append(start_offset)
-                overlapping_offsets += 1
-            elif start_offset >= write_offset and start_offset <= end_write_offset and end_offset > end_write_offset:
-                # Modify write data to include old cached values
-                # No need to modify write_offset, the increase in the length of data
-                # takes care of it 
-                data = data + self.cache[start_offset][(end_write_offset-start_offset):]
-                # Clean up old entry
-                cache_offsets_to_clean.append(start_offset)
-                overlapping_offsets += 1
-            # else:
-            #     # This is the case where we normally create a new cache entry
-            #     print("This should not happen!")
-        
-        self._delete_cache_entries(cache_offsets_to_clean)
-
-        # Start a new cache entry/flush if entry is big
-        if len(data) >= 64*1024:
-            self._flush_to_nfs(write_offset, data)
-        else:
-            self.cache[write_offset] = bytearray(data)
-            self.cache_offsets[write_offset] = len(data)+write_offset
-            is_cached = True
-        
-        return overlapping_offsets, is_cached
-        
-
-    def _replace_read_data(self, read_offset, read_length, read_data):
-        overlapping_entries = 0
-        for start_offset in self.cache.keys():
-            end_read_offset = read_offset + read_length
-            end_offset = self.cache_offsets[start_offset]
-            if (read_offset <= start_offset and start_offset < read_offset + read_length):
-                if (end_offset >= end_read_offset):
-                    read_data = (read_data[:(start_offset-read_offset)] + self.cache[start_offset])[:(end_read_offset-start_offset)]
-                else:
-                    read_data = read_data[:(start_offset-read_offset)] + self.cache[start_offset] + read_data[(end_offset-read_offset):]
-                overlapping_entries += 1
-            elif (start_offset < read_offset and end_offset > read_offset):
-                if end_offset <= end_read_offset:
-                    read_data = self.cache[start_offset][(read_offset-start_offset):] + read_data[(end_offset-read_offset):]
-                else:
-                    read_data = self.cache[start_offset][(read_offset-start_offset):(read_offset-start_offset)+read_length]
-                overlapping_entries += 1
-        return bytes(read_data), overlapping_entries
- 
-    # def _check_flush_required(self, offset, length):
-    #     offsets_to_flush = []
-        
-    #     for start_offset in self.cache.keys():
-    #         if (offset >= start_offset and offset < self.cache_offsets[start_offset]) or \
-    #             (offset + length >= start_offset and offset + length < self.cache_offsets[start_offset]) or \
-    #             (offset <= start_offset and offset + length >= self.cache_offsets[start_offset]):
-    #             offsets_to_flush.append(start_offset)
-    #     for start_offset in offsets_to_flush:    
-    #         self._flush_to_nfs(start_offset)
 
     def _check_file(self, request_number, msg):
         # this extension actually comes from v6 protocol, but since it's an
@@ -554,51 +374,16 @@ class SFTPServer(BaseSFTP, SubsystemHandler):
         return flags
 
     def _process(self, t, request_number, msg):
-        # self._log(DEBUG, "Request: {}".format(CMD_NAMES[t]))
+        self._log(DEBUG, "Request: {}".format(CMD_NAMES[t]))
         if t == CMD_OPEN:
             path = msg.get_text()
             flags = self._convert_pflags(msg.get_int())
             attr = SFTPAttributes._from_msg(msg)
-            self._log(DEBUG, "SFTP attributes open path are {!r}".format(attr))
-            dummyHandle = SFTPHandle(flags=flags)
-            self.nfs_path_to_open = path
-            self.write_size_dict = {}
-            self._log(DEBUG, "Open path is {!r}".format(path))
-            try:
-                self.nfs_open_handle = self.nfs.open(path, mode='rb+',codec=None)
-            except:
-                self.nfs_open_handle = self.nfs.open(path, mode='wb+')
-            
-            # self._log(DEBUG, "Opened nfs handle: {}".format(self.nfs_open_handle))
-            # self._log(DEBUG, "Open path is {!r}".format(path))
             self._send_handle_response(
-                request_number, dummyHandle)
-
-            # self._send_handle_response(
-            #     request_number, self.server.open(path, flags, attr)
-            # )
+                request_number, self.server.open(path, flags, attr)
+            )
         elif t == CMD_CLOSE:
             handle = msg.get_binary()
-            # self.cache_test_file.close()
-            if self.nfs_open_handle is not None:
-                start = time.time()
-                offset_list = []
-                for start_offset in self.cache.keys():
-                    offset_list.append(start_offset)
-                for start_offset in offset_list:
-                    self._flush_to_nfs(start_offset)
-                end = time.time()
-                self._log(DEBUG, "time to flush cache of size: "+str(len(offset_list))+" was "+str(end-start))
-                # with open("/home/nutanix/sahil/plot_data/data_"+str(self.fname)+".txt", "a+") as f:
-                #     for k, v in self.write_size_dict.items():
-                #         f.write('%s:%s\n' % (k, v))
-                # self.file_counter += 1    
-                # self._log(DEBUG, "Closing NFS handle {!r}".format(self.nfs_open_handle))
-                self.nfs_open_handle.close()
-                self.nfs_open_handle = None
-                self.cache_debug_file_handle.close()
-                self.cache_write_time_file_handle.close()
-                self.cache_read_time_file_handle.close()
             if handle in self.folder_table:
                 del self.folder_table[handle]
                 self._send_status(request_number, SFTP_OK)
@@ -615,29 +400,12 @@ class SFTPServer(BaseSFTP, SubsystemHandler):
             handle = msg.get_binary()
             offset = msg.get_int64()
             length = msg.get_int()
-            # self._log(DEBUG, "Read offset is {!r}".format(offset))
-            # self._log(DEBUG, "Read length is {!r}".format(length))
             if handle not in self.file_table:
                 self._send_status(
                     request_number, SFTP_BAD_MESSAGE, "Invalid handle"
                 )
                 return
-            #data = self.file_table[handle].read(offset, length)
-
-            # Create a file for the test bench
-            # self.test_file.write("read,"+str(offset)+","+str(length)+"\n")
-            start = time.time()
-
-            self.nfs_open_handle.seek(offset, os.SEEK_SET)
-            data = self.nfs_open_handle.read(length)
-
-            data, overlap = self._replace_read_data(offset, length, data)
-
-            end = time.time()
-
-            self.cache_read_time_file_handle.write("time:"+str((end-start)*1000000)+",cache_size:"+str(len(self.cache))+",overlapping_entries:"+str(overlap)+"\n")
-            # self._log(DEBUG, "Read data is {!r}".format(data.decode("utf-8")))
-
+            data = self.file_table[handle].read(offset, length)
             if isinstance(data, (bytes, str)):
                 if len(data) == 0:
                     self._send_status(request_number, SFTP_EOF)
@@ -649,37 +417,14 @@ class SFTPServer(BaseSFTP, SubsystemHandler):
             handle = msg.get_binary()
             offset = msg.get_int64()
             data = msg.get_binary()
-            # Create a file for the test bench
-            # self.test_file.write("write,"+str(offset)+","+str(len(data))+"\n")
-            # if len(data) == 4:
-            #     # Currently we assume that 4B writes don't flow into one another
-            #     self._write_to_cache(offset, bytearray(data))
-            # else:
-            #     self._flush_to_nfs(offset, bytearray(data))
-            #self.nfs_open_handle.flush()
-
-            # Just keep the write to cache.
-            # It will handle which writes to forward and which to cache
-            # self.cache_test_file.write(str(len(data))+"\n")
-
-            start = time.time()
-
-            overlap, is_cached = self._write_to_cache(offset, data)
-            
             if handle not in self.file_table:
                 self._send_status(
                     request_number, SFTP_BAD_MESSAGE, "Invalid handle"
                 )
                 return
             self._send_status(
-                request_number, SFTP_OK
+                request_number, self.file_table[handle].write(offset, data)
             )
-            end = time.time()
-            self.cache_write_time_file_handle.write("time:"+str((end-start)*1000000)+",cache_size:"+str(len(self.cache))+\
-                ",overlapping_entries:"+str(overlap)+",is_cached"+str(is_cached)+"\n")
-            # self._send_status(
-            #     request_number, self.file_table[handle].write(offset, data)
-            # )
         elif t == CMD_REMOVE:
             path = msg.get_text()
             self._send_status(request_number, self.server.remove(path))
@@ -697,12 +442,8 @@ class SFTPServer(BaseSFTP, SubsystemHandler):
             path = msg.get_text()
             self._send_status(request_number, self.server.rmdir(path))
         elif t == CMD_OPENDIR:
-            # Need to figure out flow if SFTP commands reach here
-            # No equivalent for opening dir in NFS.
-            #path = msg.get_text()
-            #self.nfs_path_to_list = msg.get_text()
-            # Always open same dummy path
-            self._open_folder(request_number, '.')
+            path = msg.get_text()
+            self._open_folder(request_number, path)
             return
         elif t == CMD_READDIR:
             handle = msg.get_binary()
@@ -712,61 +453,21 @@ class SFTPServer(BaseSFTP, SubsystemHandler):
                 )
                 return
             folder = self.folder_table[handle]
-
-            # Perform a nfs_ls and return the results
-            self._log(DEBUG, "Request number is {!r}".format(request_number))
-            self._read_nfs_folder(request_number)
-
-            # self._read_folder(request_number, folder)
+            self._read_folder(request_number, folder)
         elif t == CMD_STAT:
             path = msg.get_text()
-
-            # resp = self.server.stat(path)
-            self._log(DEBUG, "Stat path is {!r}".format(path))
-            # self._log(DEBUG, "SFTP Stat response is {!r}".format(resp))
-
-            # We set up nfs client here. The path to be picked and the first container to be mounted
-            # needs to be changed. We can do it in Realpath or in any other function!
-            
-            nfs_stat_response = self.nfs.stat(path)
-            
-            self._log(DEBUG, "NFS Stat response is {!r}".format(nfs_stat_response))
-            
-            # NFS stat response type is a dict
-            #self._log(DEBUG, "NFS Stat response type is {!r}".format(type(nfs_stat_response))) 
-            
-            # Debug NFS stat response fields
-            #self._log(DEBUG, "NFS Stat response size is {!r}".format(nfs_stat_response['blksize']))
-
-            # Debug SFTP stat response fields
-            # self._log(DEBUG, "SFTP Stat response atime is {!r}".format(resp.st_atime))
-            # self._log(DEBUG, "SFTP Stat response atime type is {!r}".format(type(resp.st_atime)))
-
-
-            nfs_stat_return = self._set_sftp_attributes(nfs_stat_response)
-
-            # self._log(DEBUG, "Dummy SFTP Stat response is {!r}".format(nfs_stat_return))
-            self._response(request_number, CMD_ATTRS, nfs_stat_return)
-            
-            # if issubclass(type(resp), SFTPAttributes):
-            #     self._response(request_number, CMD_ATTRS, resp)
-            # else:
-            #     self._send_status(request_number, resp)
+            resp = self.server.stat(path)
+            if issubclass(type(resp), SFTPAttributes):
+                self._response(request_number, CMD_ATTRS, resp)
+            else:
+                self._send_status(request_number, resp)
         elif t == CMD_LSTAT:
             path = msg.get_text()
-            self._log(DEBUG, "lstat path is {!r}".format(path))
-            # resp = self.server.lstat(path)
-            nfs_lstat_response = self.nfs.lstat(path)
-            self._log(DEBUG, "NFS Stat response is {!r}".format(nfs_lstat_response))
-
-            nfs_lstat_return = self._set_sftp_attributes(nfs_lstat_response)
-
-            self._response(request_number, CMD_ATTRS, nfs_lstat_return)
-            
-            # if issubclass(type(resp), SFTPAttributes):
-            #     self._response(request_number, CMD_ATTRS, resp)
-            # else:
-            #     self._send_status(request_number, resp)
+            resp = self.server.lstat(path)
+            if issubclass(type(resp), SFTPAttributes):
+                self._response(request_number, CMD_ATTRS, resp)
+            else:
+                self._send_status(request_number, resp)
         elif t == CMD_FSTAT:
             handle = msg.get_binary()
             if handle not in self.file_table:
@@ -774,16 +475,11 @@ class SFTPServer(BaseSFTP, SubsystemHandler):
                     request_number, SFTP_BAD_MESSAGE, "Invalid handle"
                 )
                 return
-            nfs_fstat_response = self.nfs_open_handle.fstat()
-            nfs_fstat_return = self._set_sftp_attributes(nfs_fstat_response)
-            
-            self._response(request_number, CMD_ATTRS, nfs_fstat_return)
-            # resp = self.file_table[handle].stat()
-            
-            # if issubclass(type(resp), SFTPAttributes):
-            #     self._response(request_number, CMD_ATTRS, resp)
-            # else:
-            #     self._send_status(request_number, resp)
+            resp = self.file_table[handle].stat()
+            if issubclass(type(resp), SFTPAttributes):
+                self._response(request_number, CMD_ATTRS, resp)
+            else:
+                self._send_status(request_number, resp)
         elif t == CMD_SETSTAT:
             path = msg.get_text()
             attr = SFTPAttributes._from_msg(msg)
@@ -819,13 +515,6 @@ class SFTPServer(BaseSFTP, SubsystemHandler):
         elif t == CMD_REALPATH:
             path = msg.get_text()
             rpath = self.server.canonicalize(path)
-            self._log(DEBUG, "Real path is {!r}".format(rpath))
-            
-            # Happens on the first call
-            if self.nfs == None:
-                self.nfs = libnfs.NFS('nfs://10.45.129.164/default-container-14151218230332/')
-            self.nfs_path = rpath
-
             self._response(
                 request_number, CMD_NAME, 1, rpath, "", SFTPAttributes()
             )
