@@ -134,12 +134,12 @@ class SFTPServer(BaseSFTP, SubsystemHandler):
         self.nfs_open_handle = None
         self.write_size_dict = {}
         # self.fname = "caching_coalesced_append"
-        self.cache_debug_file_name = "/home/nutanix/sahil/debug_logs/cache_size.out"
-        self.cache_write_time_file_name = "/home/nutanix/sahil/debug_logs/write_time.out"
-        self.cache_read_time_file_name = "/home/nutanix/sahil/debug_logs/read_time.out"
-        self.cache_debug_file_handle = open( self.cache_debug_file_name, "a+")
-        self.cache_write_time_file_handle = open( self.cache_write_time_file_name, "a+")
-        self.cache_read_time_file_handle = open( self.cache_read_time_file_name, "a+")
+        # self.cache_debug_file_name = "/home/nutanix/sahil/debug_logs/cache_size.out"
+        # self.cache_write_time_file_name = "/home/nutanix/sahil/debug_logs/write_time.out"
+        # self.cache_read_time_file_name = "/home/nutanix/sahil/debug_logs/read_time.out"
+        # self.cache_debug_file_handle = open( self.cache_debug_file_name, "a+")
+        # self.cache_write_time_file_handle = open( self.cache_write_time_file_name, "a+")
+        # self.cache_read_time_file_handle = open( self.cache_read_time_file_name, "a+")
         self.cache = {}
         self.cache_offsets = {}
         # self.cache_test_file = open("/home/nutanix/sahil/qemu-traces/qemu_cache_writes.out","a+")
@@ -596,9 +596,9 @@ class SFTPServer(BaseSFTP, SubsystemHandler):
                 # self._log(DEBUG, "Closing NFS handle {!r}".format(self.nfs_open_handle))
                 self.nfs_open_handle.close()
                 self.nfs_open_handle = None
-                self.cache_debug_file_handle.close()
-                self.cache_write_time_file_handle.close()
-                self.cache_read_time_file_handle.close()
+                # self.cache_debug_file_handle.close()
+                # self.cache_write_time_file_handle.close()
+                # self.cache_read_time_file_handle.close()
             if handle in self.folder_table:
                 del self.folder_table[handle]
                 self._send_status(request_number, SFTP_OK)
@@ -635,7 +635,7 @@ class SFTPServer(BaseSFTP, SubsystemHandler):
 
             end = time.time()
 
-            self.cache_read_time_file_handle.write("time:"+str((end-start)*1000000)+",cache_size:"+str(len(self.cache))+",overlapping_entries:"+str(overlap)+"\n")
+            # self.cache_read_time_file_handle.write("time:"+str((end-start)*1000000)+",cache_size:"+str(len(self.cache))+",overlapping_entries:"+str(overlap)+"\n")
             # self._log(DEBUG, "Read data is {!r}".format(data.decode("utf-8")))
 
             if isinstance(data, (bytes, str)):
@@ -675,8 +675,8 @@ class SFTPServer(BaseSFTP, SubsystemHandler):
                 request_number, SFTP_OK
             )
             end = time.time()
-            self.cache_write_time_file_handle.write("time:"+str((end-start)*1000000)+",cache_size:"+str(len(self.cache))+\
-                ",overlapping_entries:"+str(overlap)+",is_cached"+str(is_cached)+"\n")
+            # self.cache_write_time_file_handle.write("time:"+str((end-start)*1000000)+",cache_size:"+str(len(self.cache))+\
+                # ",overlapping_entries:"+str(overlap)+",is_cached"+str(is_cached)+"\n")
             # self._send_status(
             #     request_number, self.file_table[handle].write(offset, data)
             # )
